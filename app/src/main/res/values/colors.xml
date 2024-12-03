@@ -10,4 +10,6 @@
     <color name="divider">#BDBDBD</color>
     <color name="success_green">#4CAF50</color>
     <color name="error_red">#F44336</color>
+    <color name="warning_background">#FFE0E0</color>
+    <color name="warning_text">#D32F2F</color>
 </resources>

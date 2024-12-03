@@ -12,6 +12,7 @@ import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageButton;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -22,6 +23,8 @@ import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.preference.PreferenceManager;
+
+import com.google.android.material.card.MaterialCardView;
 
 import java.io.IOException;
 import java.util.Locale;
@@ -46,6 +49,11 @@ public class MainActivity extends AppCompatActivity {
     private EditText etConsumptionLimit, etEsp32IpAddress;
     private Button btnUpdate, btnSaveIp;
     private ProgressBar progressBar;
+    private MaterialCardView alertBanner;
+    private TextView alertText;
+    private ImageButton dismissAlert;
+    private NotificationHelper notificationHelper;
+
     private OkHttpClient client;
     private Handler handler;
     private Runnable fetchRunnable;
@@ -54,6 +62,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean isConnecting = false;
     private int connectionAttempts = 0;
     private static final int MAX_CONNECTION_ATTEMPTS = 3;
+    private float consumptionLimit = 500.0f; // Default value
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -75,14 +84,30 @@ public class MainActivity extends AppCompatActivity {
         sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
         initializeViews();
         setupOkHttpClient();
+
+        notificationHelper = new NotificationHelper(this);
         handler = new Handler(Looper.getMainLooper());
+
         setupFetchRunnable();
         setupListeners();
+        initializeAlertBanner();
 
         String savedIpAddress = sharedPreferences.getString(IP_PREFERENCE_KEY, DEFAULT_IP);
         etEsp32IpAddress.setText(savedIpAddress);
 
+        // Load saved consumption limit if exists
+        consumptionLimit = sharedPreferences.getFloat("CONSUMPTION_LIMIT", 500.0f);
+        etConsumptionLimit.setText(String.valueOf(consumptionLimit));
+
         Log.i(TAG, "SmartWatt App Initialized");
+    }
+
+    private void initializeAlertBanner() {
+        alertBanner = findViewById(R.id.alertBanner);
+        alertText = findViewById(R.id.alertText);
+        dismissAlert = findViewById(R.id.dismissAlert);
+
+        dismissAlert.setOnClickListener(v -> alertBanner.setVisibility(View.GONE));
     }
 
     private void setupOkHttpClient() {
@@ -147,6 +172,21 @@ public class MainActivity extends AppCompatActivity {
         Log.i(TAG, "IP Address Updated: " + ipAddress);
     }
 
+    private void checkConsumptionLimit(float currentConsumption) {
+        if (currentConsumption > consumptionLimit) {
+            // Show banner
+            alertText.setText(String.format(Locale.US,
+                    "Warning: Current consumption (%.2f kWh) has exceeded the limit (%.2f kWh)",
+                    currentConsumption, consumptionLimit));
+            alertBanner.setVisibility(View.VISIBLE);
+
+            // Show notification
+            notificationHelper.showConsumptionAlert(currentConsumption, consumptionLimit);
+        } else {
+            alertBanner.setVisibility(View.GONE);
+        }
+    }
+
     private void fetchData() {
         String ipAddress = etEsp32IpAddress.getText().toString().trim();
         String url = "http://" + ipAddress + "/raw";
@@ -206,7 +246,6 @@ public class MainActivity extends AppCompatActivity {
         try {
             Log.d(TAG, "Raw HTML response: " + htmlResponse);
 
-            // Find the data between <div id='data'> and </div>
             int startIndex = htmlResponse.indexOf("<div id='data'>") + "<div id='data'>".length();
             int endIndex = htmlResponse.indexOf("</div>", startIndex);
 
@@ -231,6 +270,9 @@ public class MainActivity extends AppCompatActivity {
                     tvCurrent.setText(String.format(Locale.US, "Current: %.2f A", current));
                     tvPower.setText(String.format(Locale.US, "Power: %.2f kW", power));
                     tvEnergy.setText(String.format(Locale.US, "Energy: %.2f kWh", energy));
+
+                    // Check consumption limit
+                    checkConsumptionLimit(energy);
 
                     Log.d(TAG, String.format("Parsed values - V: %.2f, I: %.2f, P: %.2f, E: %.2f",
                             voltage, current, power, energy));
@@ -290,6 +332,17 @@ public class MainActivity extends AppCompatActivity {
 
         if (limit.isEmpty()) {
             Toast.makeText(this, "Please enter a consumption limit", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        try {
+            consumptionLimit = Float.parseFloat(limit);
+            // Save the new consumption limit
+            SharedPreferences.Editor editor = sharedPreferences.edit();
+            editor.putFloat("CONSUMPTION_LIMIT", consumptionLimit);
+            editor.apply();
+        } catch (NumberFormatException e) {
+            Toast.makeText(this, "Invalid consumption limit", Toast.LENGTH_SHORT).show();
             return;
         }
 
