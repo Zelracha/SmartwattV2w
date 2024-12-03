@@ -1,9 +1,12 @@
 package com.example.smartwattv2;
 
+import android.Manifest;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -19,11 +22,13 @@ import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.preference.PreferenceManager;
 
+import com.google.android.material.button.MaterialButton;
 import com.google.android.material.card.MaterialCardView;
 
 import java.io.IOException;
@@ -44,10 +49,19 @@ public class MainActivity extends AppCompatActivity {
     private static final int CONNECTION_TIMEOUT = 5000; // 5 seconds
     private static final String DEFAULT_IP = "192.168.4.1"; // Default ESP32 AP IP
     private static final String IP_PREFERENCE_KEY = "ESP32_IP";
+    private static final int PERMISSION_REQUEST_CODE = 123;
+
+    // Test variables
+    private float testEnergy = 0.0f;
+    private Handler testHandler = new Handler(Looper.getMainLooper());
+    private final float ENERGY_INCREMENT = 50.0f; // Increase by 50 kWh each update
+    private boolean isTestMode = false; // Set to true to enable test mode
+    private boolean hasExceededLimit = false;
 
     private TextView tvVoltage, tvCurrent, tvPower, tvEnergy, tvConnectionStatus;
     private EditText etConsumptionLimit, etEsp32IpAddress;
     private Button btnUpdate, btnSaveIp;
+    private MaterialButton btnResetTest;
     private ProgressBar progressBar;
     private MaterialCardView alertBanner;
     private TextView alertText;
@@ -81,6 +95,9 @@ public class MainActivity extends AppCompatActivity {
             return insets;
         });
 
+        // Request notification permission
+        requestNotificationPermission();
+
         sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
         initializeViews();
         setupOkHttpClient();
@@ -99,7 +116,75 @@ public class MainActivity extends AppCompatActivity {
         consumptionLimit = sharedPreferences.getFloat("CONSUMPTION_LIMIT", 500.0f);
         etConsumptionLimit.setText(String.valueOf(consumptionLimit));
 
+        if (isTestMode) {
+            // Disable actual data fetching
+            handler.removeCallbacks(fetchRunnable);
+            // Start test mode
+            startTestMode();
+            // Show toast to indicate test mode
+            Toast.makeText(this, "Running in Test Mode", Toast.LENGTH_LONG).show();
+        }
+
         Log.i(TAG, "SmartWatt App Initialized");
+    }
+
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this,
+                        new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                        PERMISSION_REQUEST_CODE);
+            }
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Notification permission granted", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this,
+                        "Notification permission denied. Some features may not work.",
+                        Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    private void startTestMode() {
+        Runnable testRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (isTestMode) {
+                    // Simulate increasing energy consumption
+                    testEnergy += ENERGY_INCREMENT;
+
+                    // Create test data
+                    String testData = String.format(Locale.US,
+                            "<div id='data'>220.0,5.0,1.1,%.2f</div>", testEnergy);
+
+                    // Update UI with test data
+                    updateUI(testData);
+
+                    // Schedule next update
+                    testHandler.postDelayed(this, 5000); // Update every 5 seconds
+                }
+            }
+        };
+
+        // Start the test updates
+        testHandler.post(testRunnable);
+    }
+
+    private void resetTest() {
+        testEnergy = 0.0f;
+        hasExceededLimit = false;
+        alertBanner.setVisibility(View.GONE);
+        String testData = String.format(Locale.US,
+                "<div id='data'>220.0,5.0,1.1,%.2f</div>", testEnergy);
+        updateUI(testData);
     }
 
     private void initializeAlertBanner() {
@@ -130,6 +215,12 @@ public class MainActivity extends AppCompatActivity {
         btnUpdate = findViewById(R.id.btnUpdate);
         btnSaveIp = findViewById(R.id.btnSaveIp);
         progressBar = findViewById(R.id.progressBar);
+        btnResetTest = findViewById(R.id.btnResetTest);
+
+        if (isTestMode) {
+            btnResetTest.setVisibility(View.VISIBLE);
+            btnResetTest.setOnClickListener(v -> resetTest());
+        }
     }
 
     private void setupFetchRunnable() {
@@ -180,10 +271,14 @@ public class MainActivity extends AppCompatActivity {
                     currentConsumption, consumptionLimit));
             alertBanner.setVisibility(View.VISIBLE);
 
-            // Show notification
-            notificationHelper.showConsumptionAlert(currentConsumption, consumptionLimit);
+            // Show notification only when first exceeding the limit
+            if (!hasExceededLimit) {
+                notificationHelper.showConsumptionAlert(currentConsumption, consumptionLimit);
+                hasExceededLimit = true;
+            }
         } else {
             alertBanner.setVisibility(View.GONE);
+            hasExceededLimit = false;
         }
     }
 
@@ -327,7 +422,6 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void updateSettings() {
-        String ipAddress = etEsp32IpAddress.getText().toString().trim();
         String limit = etConsumptionLimit.getText().toString().trim();
 
         if (limit.isEmpty()) {
@@ -341,50 +435,62 @@ public class MainActivity extends AppCompatActivity {
             SharedPreferences.Editor editor = sharedPreferences.edit();
             editor.putFloat("CONSUMPTION_LIMIT", consumptionLimit);
             editor.apply();
+
+            Toast.makeText(this, "Consumption limit updated to: " + consumptionLimit + " kWh",
+                    Toast.LENGTH_SHORT).show();
+
+            if (isTestMode) {
+                // For testing, immediately check if current test value exceeds the new limit
+                checkConsumptionLimit(testEnergy);
+            }
+
+            String url = String.format("http://%s/set_time?consumption_limit=%s",
+                    etEsp32IpAddress.getText().toString().trim(), limit);
+            Log.d(TAG, "Updating settings: " + url);
+
+            Request request = new Request.Builder()
+                    .url(url)
+                    .post(RequestBody.create(null, new byte[0]))
+                    .build();
+
+            client.newCall(request).enqueue(new Callback() {
+                @Override
+                public void onFailure(Call call, IOException e) {
+                    runOnUiThread(() -> {
+                        String errorMessage = "Failed to update settings: " + e.getMessage();
+                        Toast.makeText(MainActivity.this, errorMessage, Toast.LENGTH_SHORT).show();
+                        Log.e(TAG, "Settings update failed", e);
+                    });
+                }
+
+                @Override
+                public void onResponse(Call call, Response response) throws IOException {
+                    runOnUiThread(() -> {
+                        if (response.isSuccessful()) {
+                            Toast.makeText(MainActivity.this, "Settings Updated", Toast.LENGTH_SHORT).show();
+                            Log.i(TAG, "Settings successfully updated");
+                        } else {
+                            Toast.makeText(MainActivity.this,
+                                    "Failed to update settings. Response code: " + response.code(),
+                                    Toast.LENGTH_SHORT).show();
+                            Log.w(TAG, "Settings update failed. Response code: " + response.code());
+                        }
+                    });
+                }
+            });
+
         } catch (NumberFormatException e) {
             Toast.makeText(this, "Invalid consumption limit", Toast.LENGTH_SHORT).show();
-            return;
         }
-
-        String url = String.format("http://%s/set_time?consumption_limit=%s", ipAddress, limit);
-        Log.d(TAG, "Updating settings: " + url);
-
-        Request request = new Request.Builder()
-                .url(url)
-                .post(RequestBody.create(null, new byte[0]))
-                .build();
-
-        client.newCall(request).enqueue(new Callback() {
-            @Override
-            public void onFailure(Call call, IOException e) {
-                runOnUiThread(() -> {
-                    String errorMessage = "Failed to update settings: " + e.getMessage();
-                    Toast.makeText(MainActivity.this, errorMessage, Toast.LENGTH_SHORT).show();
-                    Log.e(TAG, "Settings update failed", e);
-                });
-            }
-
-            @Override
-            public void onResponse(Call call, Response response) throws IOException {
-                runOnUiThread(() -> {
-                    if (response.isSuccessful()) {
-                        Toast.makeText(MainActivity.this, "Settings Updated", Toast.LENGTH_SHORT).show();
-                        Log.i(TAG, "Settings successfully updated");
-                    } else {
-                        Toast.makeText(MainActivity.this,
-                                "Failed to update settings. Response code: " + response.code(),
-                                Toast.LENGTH_SHORT).show();
-                        Log.w(TAG, "Settings update failed. Response code: " + response.code());
-                    }
-                });
-            }
-        });
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
         handler.removeCallbacks(fetchRunnable);
+        if (isTestMode) {
+            testHandler.removeCallbacksAndMessages(null);
+        }
         Log.i(TAG, "Activity destroyed, fetch callbacks removed");
     }
 }
