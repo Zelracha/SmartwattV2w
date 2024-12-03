@@ -1,6 +1,9 @@
+// Author: Engr. Raizel Sablan
+
 package com.example.smartwattv2;
 
 import android.Manifest;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -16,6 +19,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageButton;
+import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -30,8 +34,10 @@ import androidx.preference.PreferenceManager;
 
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.card.MaterialCardView;
+import com.google.android.material.floatingactionbutton.FloatingActionButton;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
@@ -54,7 +60,7 @@ public class MainActivity extends AppCompatActivity {
     // Test variables
     private float testEnergy = 0.0f;
     private Handler testHandler = new Handler(Looper.getMainLooper());
-    private final float ENERGY_INCREMENT = 50.0f; // Increase by 50 kWh each update
+    private final float ENERGY_INCREMENT = 0.1f; // Increase by 0.1 kWh each update
     private boolean isTestMode = false; // Set to true to enable test mode
     private boolean hasExceededLimit = false;
 
@@ -67,6 +73,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView alertText;
     private ImageButton dismissAlert;
     private NotificationHelper notificationHelper;
+    private FloatingActionButton fabRecommendations;
 
     private OkHttpClient client;
     private Handler handler;
@@ -76,7 +83,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean isConnecting = false;
     private int connectionAttempts = 0;
     private static final int MAX_CONNECTION_ATTEMPTS = 3;
-    private float consumptionLimit = 500.0f; // Default value
+    private float consumptionLimit = 3.6f; // Default value changed to 3.6 kWh
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -113,7 +120,7 @@ public class MainActivity extends AppCompatActivity {
         etEsp32IpAddress.setText(savedIpAddress);
 
         // Load saved consumption limit if exists
-        consumptionLimit = sharedPreferences.getFloat("CONSUMPTION_LIMIT", 500.0f);
+        consumptionLimit = sharedPreferences.getFloat("CONSUMPTION_LIMIT", 3.6f);
         etConsumptionLimit.setText(String.valueOf(consumptionLimit));
 
         if (isTestMode) {
@@ -151,6 +158,62 @@ public class MainActivity extends AppCompatActivity {
                         Toast.LENGTH_LONG).show();
             }
         }
+    }
+
+    private void showRecommendationsDialog() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        View dialogView = getLayoutInflater().inflate(R.layout.dialog_recommendations, null);
+        builder.setView(dialogView);
+
+        TextView titleUsageStatus = dialogView.findViewById(R.id.titleUsageStatus);
+        TextView textCurrentStatus = dialogView.findViewById(R.id.textCurrentStatus);
+        LinearLayout recommendationsContainer = dialogView.findViewById(R.id.recommendationsContainer);
+        LinearLayout generalTipsContainer = dialogView.findViewById(R.id.generalTipsContainer);
+
+        // Get current energy value
+        float currentEnergy = isTestMode ? testEnergy : 0; // Use actual energy value in non-test mode
+
+        // Set current status
+        titleUsageStatus.setText("Current Usage Status");
+        textCurrentStatus.setText(String.format(Locale.US,
+                "Current consumption: %.2f kWh\nLimit: %.2f kWh",
+                currentEnergy, consumptionLimit));
+
+        // Add consumption-based recommendations
+        List<PowerRecommendation.Recommendation> consumptionRecs =
+                PowerRecommendation.getConsumptionBasedRecommendations(currentEnergy, consumptionLimit);
+
+        for (PowerRecommendation.Recommendation rec : consumptionRecs) {
+            addRecommendationView(recommendationsContainer, rec);
+        }
+
+        // Add general recommendations
+        List<PowerRecommendation.Recommendation> generalRecs =
+                PowerRecommendation.getGeneralRecommendations();
+
+        for (PowerRecommendation.Recommendation rec : generalRecs) {
+            addRecommendationView(generalTipsContainer, rec);
+        }
+
+        builder.setTitle("Power Saving Recommendations")
+                .setPositiveButton("Close", null);
+
+        AlertDialog dialog = builder.create();
+        dialog.show();
+    }
+
+    private void addRecommendationView(LinearLayout container, PowerRecommendation.Recommendation rec) {
+        View recView = getLayoutInflater().inflate(R.layout.item_recommendation, container, false);
+
+        TextView titleView = recView.findViewById(R.id.recTitle);
+        TextView descView = recView.findViewById(R.id.recDescription);
+        TextView categoryView = recView.findViewById(R.id.recCategory);
+
+        titleView.setText(rec.title);
+        descView.setText(rec.description);
+        categoryView.setText(rec.category);
+
+        container.addView(recView);
     }
 
     private void startTestMode() {
@@ -216,11 +279,14 @@ public class MainActivity extends AppCompatActivity {
         btnSaveIp = findViewById(R.id.btnSaveIp);
         progressBar = findViewById(R.id.progressBar);
         btnResetTest = findViewById(R.id.btnResetTest);
+        fabRecommendations = findViewById(R.id.fabRecommendations);
 
         if (isTestMode) {
             btnResetTest.setVisibility(View.VISIBLE);
             btnResetTest.setOnClickListener(v -> resetTest());
         }
+
+        fabRecommendations.setOnClickListener(v -> showRecommendationsDialog());
     }
 
     private void setupFetchRunnable() {
